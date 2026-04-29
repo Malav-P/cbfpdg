@@ -14,8 +14,8 @@ Barrier function:
     Lg ψ₁ = ∇_r h ≠ 0, so the SOCP has real control authority.
 
 Lyapunov function:
-    V(x) = 0.5 * ‖v‖²   (drives velocity to zero for soft landing)
-    Uses QuadraticCLF with block-zero P = diag(0,0,0, 0.5,0.5,0.5).
+    V(x) = 0.5*(v_x² + v_y² + (v_z + K_P·r_z)²)
+    Drives v_z → -K_P·r_z so that ṙ_z ≈ -K_P·r_z → exponential altitude decay.
 
 Run with:
     uv run python simulate_landing.py
@@ -33,20 +33,20 @@ from cbfpdg.landing_socp import solve_landing_socp
 # Parameters
 # ---------------------------------------------------------------------------
 
-G = 9.81              # gravitational acceleration (m/s^2)
+G = 3.73              # gravitational acceleration (m/s^2)
 A_GRAV = np.array([0.0, 0.0, -G])
 
-THETA  = np.deg2rad(40)              # glide-slope half-angle from horizontal
-R0     = np.array([15.0, 3.0, 30.0]) # initial position  (m)
-V0     = np.array([-1.0, -0.6, -10.0]) # initial velocity  (m/s)
+THETA  = np.deg2rad(55)              # glide-slope half-angle from horizontal
+R0     = np.array([-75.0, 45.0, 200.0]) # initial position  (m)
+V0     = np.array([-2.0, -0.6, -30.0]) # initial velocity  (m/s)
 
-ALPHA1 = 1.0   # HOCBF first-layer gain
+ALPHA1 = 1.0  # HOCBF first-layer gain
 ALPHA2 = 1.0   # HOCBF second-layer gain
 GAMMA  = 0.5   # CLF decay rate  (V̇ ≤ -γ V)
-RHO    = 15.0  # max thrust magnitude (m/s²)
+RHO    = 10.0  # max thrust magnitude (m/s²)
 
 DT     = 0.05  # timestep (s)
-T_MAX  = 20.0  # max simulation time (s)
+T_MAX  = 40.0  # max simulation time (s)
 
 
 # ---------------------------------------------------------------------------
@@ -55,11 +55,18 @@ T_MAX  = 20.0  # max simulation time (s)
 
 cbf = GlideSlopeCBF(theta=THETA, pos_start=0)
 
-# V(x) = 0.5 * ‖v‖²  via block-zero P = diag(0,0,0, 0.5,0.5,0.5)
-P = np.block([
-    [np.zeros((3, 3)), np.zeros((3, 3))],
-    [np.zeros((3, 3)), 0.5 * np.eye(3)],
-])
+# CLF: V = 0.5*(v_x² + v_y² + (v_z + K_P·r_z)²)
+# Drives v_z → -K_P·r_z, giving ṙ_z ≈ -K_P·r_z → exponential altitude decay.
+# Horizontal position is bounded to zero by the CBF cone constraint.
+K_P = 0.15   # descent rate gain: desired v_z = -K_P * r_z
+
+P = np.zeros((6, 6))
+P[3, 3] = 0.5          # v_x²
+P[4, 4] = 0.5          # v_y²
+P[5, 5] = 0.5          # v_z²
+P[2, 2] = 0.5 * K_P**2 # K_P²·r_z²
+P[2, 5] = 0.5 * K_P    # cross term r_z·v_z
+P[5, 2] = 0.5 * K_P    # (symmetry)
 clf = QuadraticCLF(P=P)
 
 
@@ -86,7 +93,7 @@ def run() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if h_val < -0.05:
             print(f"WARNING: CBF violated at t = {step * DT:.2f} s,  h = {h_val:.3f}")
 
-        u, status = solve_landing_socp(
+        u, status, deltav = solve_landing_socp(
             x=x, cbf=cbf, a_grav=A_GRAV, clf=clf,
             alpha1=ALPHA1, alpha2=ALPHA2,
             gamma=GAMMA, rho=RHO,
@@ -146,6 +153,7 @@ def plot(t, x_hist, u_hist, h_hist) -> None:
     ax3d.scatter(*r_hist[0],  color="green", s=60, zorder=5, label="Start")
     ax3d.scatter(*r_hist[-1], color="red",   s=60, zorder=5, label="End")
     ax3d.set_xlabel("x (m)"); ax3d.set_ylabel("y (m)"); ax3d.set_zlabel("z (m)")
+    ax3d.set_box_aspect([1, 1, 1])
     ax3d.set_title("3-D Trajectory")
     ax3d.legend(fontsize=8)
 
@@ -161,6 +169,7 @@ def plot(t, x_hist, u_hist, h_hist) -> None:
                       alpha=0.08, color="orange", label="Safe region")
     ax2.scatter(rxy_norm[0],  r_hist[0, 2],  color="green", s=60, zorder=5, label="Start")
     ax2.scatter(rxy_norm[-1], r_hist[-1, 2], color="red",   s=60, zorder=5, label="End")
+    ax2.set_aspect("equal")
     ax2.set_xlabel("Horizontal distance  ‖r_xy‖  (m)")
     ax2.set_ylabel("Altitude  r_z  (m)")
     ax2.set_title("Side View  (cone cross-section)")
@@ -190,6 +199,8 @@ def plot(t, x_hist, u_hist, h_hist) -> None:
                      where=h_arr >= 0, alpha=0.15, color="green", label="Safe")
     ax4.fill_between(t, 0, h_arr,
                      where=h_arr < 0,  alpha=0.30, color="red",   label="Unsafe")
+    ax3.set_xlim(t[0], t[-1])
+    ax4.set_xlim(t[0], t[-1])
     ax4.set_xlabel("Time  (s)")
     ax4.set_ylabel("h(x)")
     ax4.set_title("CBF Value  (must stay ≥ 0)")

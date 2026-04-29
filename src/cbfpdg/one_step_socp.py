@@ -84,3 +84,41 @@ def solve_socp(Lfh, Lgh, alpha_h,
         print(f"CLF slack delta = {delta.value:.4f} (CLF constraint relaxed)")
 
     return u.value, prob.status, delta.value
+
+
+def p3(Lfh, Lgh, alpha_h,
+       LfV, LgV, gamma_V,
+       rho1,
+       u_dim):
+    """
+    Solve:
+        max ||u||
+        s.t.
+            Lfh + Lgh @ u >= -alpha_h
+            LfV + LgV @ u <= -gamma_V
+            ||u|| <= rho1
+    """
+
+    # Decision variables
+    u = cp.Variable(u_dim)
+
+    # Objective
+    objective = cp.Maximize(cp.log(cp.norm(u, 2)))
+
+    # Constraints
+    constraints = [
+        Lfh + Lgh @ u >= -alpha_h,
+        LfV + LgV @ u <= -gamma_V,
+        cp.norm(u, 2) <= rho1
+    ]
+    # Problem
+    prob = cp.Problem(objective, constraints)
+
+    # P2 CHANGE: P3 uses rho1,  reject negative norm bound
+    if rho1 < 0:
+        raise ValueError("rho1 must be non-negative.")
+
+    # Solve
+    prob.solve(solver=cp.ECOS)  # ECOS or SCS
+
+    return u.value, prob.status
